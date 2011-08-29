@@ -1,0 +1,28 @@
+Realname_userreference 6.x-1.2
+==============================
+#801824 by changocharly: query error with PostgreSQL.
+#1061342 by guix and changocharly: non case sensitive db query with PostgreSQL.
+#1047274 by guix: textbox size can be customized now.
+
+Realname_userreference 6.x-1.1
+==============================
+#716794 by guix: Permission of the autocomplete callback path fixed.
+
+Realname_userreference 6.x-1.0
+==============================
+#479024 by guix: Official release was waiting for a new official release of Realname.
+
+Realname_userreference 6.x-1.x-dev
+==================================
+#538836 by guix and tstackhouse: PHP 5 now required.
+
+Realname_userreference 6.x-1.0-beta2, 2009-07-14
+================================================
+#518972 by guix: Update CHANGELOG.txt.
+#518966 by guix: Add CHANGELOG.txt.
+#518958 by guix: Update README.txt and CHANGELOG.txt.
+#518854 by guix: Limit the number of results.
+
+Realname_userreference 6.x-1.0-beta1, 2009-06-01
+================================================
+#380460 by guix: Initial commit.

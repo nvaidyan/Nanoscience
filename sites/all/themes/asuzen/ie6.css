@@ -1,0 +1,13 @@
+/**
+*  Title: ASU Zen Theme
+*  Copyright: (c) 2010 Arizona State University
+*  Author: Jeff Beeman, Kathy Marks, Nathan Gudmunson
+*  Contributor: Maximo Mena
+*  Description: Styles to address IE6 browser inconsistencies
+*/
+body {
+	text-align: left;
+}
+#asu_container {
+   width: expression(document.body.clientWidth < 1002? "996px": "auto" );
+}

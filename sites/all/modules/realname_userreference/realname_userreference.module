@@ -1,0 +1,478 @@
+<?php
+
+/**
+ * @file
+ * Adds a "Realname" autocomplete widget to the CCK User Reference field.
+ */
+
+/**
+ * Implementation of hook_menu().
+ */
+function realname_userreference_menu() {
+  $items = array();
+  $items['realname_userreference/autocomplete'] = array(
+    'title' => 'Realname Userreference autocomplete',
+    'page callback' => 'realname_userreference_auto',
+    'access callback' => 'realname_userreference_auto_access',
+    'access arguments' => array(2),
+    'type' => MENU_CALLBACK
+  );
+  return $items;
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function realname_userreference_theme() {
+  return array(
+    'realname_userreference_auto' => array(
+      'arguments' => array('element' => NULL),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_widget_info().
+ */
+function realname_userreference_widget_info() {
+  return array(
+    'realname_userreference_auto' => array(
+      'label' => t('Autocomplete text field integrated with Realnames'),
+      'field types' => array('userreference'),
+      'multiple values' => CONTENT_HANDLE_CORE,
+      'callbacks' => array(
+        'default value' => CONTENT_CALLBACK_DEFAULT,
+      ),
+    ),
+  );
+}
+
+/**
+ * Implementation of FAPI hook_elements().
+ */
+function realname_userreference_elements() {
+  return array(
+    'realname_userreference_auto' => array(
+      '#input' => TRUE,
+      '#columns' => array('name'),
+      '#delta' => 0,
+      '#process' => array('realname_userreference_auto_process'),
+      '#autocomplete_path' => FALSE,
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_widget_settings().
+ */
+function realname_userreference_widget_settings($op, $widget) {
+  switch ($op) {
+    case 'form':
+      $form = array();
+      $match = isset($widget['autocomplete_match']) ? $widget['autocomplete_match'] : 'contains';
+      $size = (isset($widget['size']) && is_numeric($widget['size'])) ? $widget['size'] : 60;
+      if ($widget['type'] == 'realname_userreference_auto') {
+        $form['autocomplete_match'] = array(
+          '#type' => 'select',
+          '#title' => t('Autocomplete matching'),
+          '#default_value' => $match,
+          '#options' => array(
+            'starts_with' => t('Starts with'),
+            'contains' => t('Contains'),
+          ),
+          '#description' => t('Select the method used to collect autocomplete suggestions. Note that <em>Contains</em> can cause performance issues on sites with thousands of users. If you want the autocomplete suggestions to include permutations of Realnames fields, choose <em>Contains</em>.'),
+        );
+        $form['size'] = array(
+          '#type' => 'textfield',
+          '#title' => t('Size of textfield'),
+          '#default_value' => $size,
+          '#element_validate' => array('_element_validate_integer_positive'),
+          '#required' => TRUE,
+        );
+      }
+      else {
+        $form['autocomplete_match'] = array('#type' => 'hidden', '#value' => $match);
+        $form['size'] = array('#type' => 'hidden', '#value' => $size);
+      }
+      $form['reverse_link'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Reverse link'),
+        '#default_value' => isset($widget['reverse_link']) ? $widget['reverse_link'] : 0,
+        '#description' => t('If selected, a reverse link back to the referencing node will displayed on the referenced user record.'),
+      );
+      return $form;
+
+    case 'save':
+      return array('autocomplete_match', 'size', 'reverse_link');
+  }
+}
+
+/**
+ * Implementation of hook_widget().
+ */
+function realname_userreference_widget(&$form, &$form_state, $field, $items, $delta = 0) {
+  switch ($field['widget']['type']) {
+    case 'realname_userreference_auto':
+      $element = array(
+        '#type' => 'realname_userreference_auto',
+        '#default_value' => isset($items[$delta]) ? $items[$delta] : NULL,
+        '#value_callback' => 'realname_userreference_auto_value',
+      );
+      break;
+  }
+  return $element;
+}
+
+/**
+ * Value for a Realname userreference autocomplete element.
+ */
+function realname_userreference_auto_value($element, $edit = FALSE) {
+  $field_key  = $element['#columns'][0];
+  if (!empty($element['#default_value'][$field_key])) {
+    $account = realname_get_user($element['#default_value'][$field_key]);
+    $name = db_result(db_query("SELECT name FROM {users} WHERE uid = '%d'", $element['#default_value'][$field_key]));
+    if ($account->name != $name) {
+      $value = $account->name .' ('. $name .')';
+    }
+    else $value = $name;
+    $value = check_plain($value);
+    return array($field_key => $value);
+  }
+  return array($field_key => NULL);
+}
+
+/**
+ * Process an individual element.
+ */
+function realname_userreference_auto_process($element, $edit, $form_state, $form) {
+  // The realname userreference autocomplete widget doesn't need to create its own
+  // element, it can wrap around the text_textfield element and add an autocomplete
+  // path and some extra processing to it.
+  // Add a validation step where the value can be unwrapped.
+  $field_key  = $element['#columns'][0];
+
+  $element[$field_key] = array(
+    '#type' => 'text_textfield',
+    '#default_value' => isset($element['#value']) ? $element['#value'] : '',
+    '#autocomplete_path' => 'realname_userreference/autocomplete/'. $element['#field_name'],
+    // The following values were set by the content module and need
+    // to be passed down to the nested element.
+    '#title' => $element['#title'],
+    '#required' => $element['#required'],
+    '#description' => $element['#description'],
+    '#field_name' => $element['#field_name'],
+    '#type_name' => $element['#type_name'],
+    '#delta' => $element['#delta'],
+    '#columns' => $element['#columns'],
+  );
+  if (empty($element[$field_key]['#element_validate'])) {
+    $element[$field_key]['#element_validate'] = array();
+  }
+  array_unshift($element[$field_key]['#element_validate'], 'realname_userreference_auto_validate');
+
+  // Used so that hook_field('validate') knows where to flag an error.
+  $element['_error_element'] = array(
+    '#type' => 'value',
+    // Wrapping the element around a text_textfield element creates a
+    // nested element, so the final id will look like 'field-name-0-uid-uid'.
+    '#value' => implode('][', array_merge($element['#parents'], array($field_key, $field_key))),
+  );
+  return $element;
+}
+
+/**
+ * Validate an autocomplete element.
+ *
+ * Remove the wrapper layer and set the right element's value.
+ * This will move the nested value at 'field-name-0-uid-uid'
+ * back to its original location, 'field-name-0-uid'.
+ */
+function realname_userreference_auto_validate($element, &$form_state) {
+  $field_name = $element['#field_name'];
+  $type_name = $element['#type_name'];
+  $field = content_fields($field_name, $type_name);
+  $field_key = $element['#columns'][0];
+  $value = $element['#value'][$field_key];
+  if (preg_match('#\((.*)\)#', $value, $value_matches)) {
+    $value = $value_matches[1]; // if the title is "Realname (name)" we need to pass "name" only to userreference_potential_references().
+  }
+  $uid = NULL;
+  if (!empty($value)) {
+    $reference = _userreference_potential_references($field, $value, 'equals', NULL, 1);
+    if (empty($reference)) {
+      form_error($element[$field_key], t('%name: found no valid user with that name.', array('%name' => t($field['widget']['label']))));
+    }
+    else {
+      $uid = key($reference);
+    }
+  }
+  form_set_value($element, $uid, $form_state);
+}
+
+/**
+ * Implementation of hook_allowed_values().
+ */
+function realname_userreference_allowed_values($field) {
+  $references = _realname_userreference_potential_references($field);
+
+  $options = array();
+  foreach ($references as $key => $value) {
+    $options[$key] = $value['rendered'];
+  }
+  return $options;
+}
+
+/**
+ * Fetch an array of all candidate referenced users.
+ *
+ * This info is used in various places (aloowed values, autocomplete results,
+ * input validation...). Some of them only need the uids, others nid + names,
+ * others yet uid + names + rendered row (for display in widgets).
+ * The array we return contains all the potentially needed information, and lets
+ * consumers use the parts they actually need.
+ *
+ * @param $field
+ *   The field description.
+ * @param $string
+ *   Optional string to filter usernames on (used by autocomplete)
+ * @param $match
+ *   Operator to match filtered name against, can be any of:
+ *   'contains', 'equals', 'starts_with'
+ * @param $ids
+ *   Optional user ids to lookup (the $string and $match arguments will be
+ *   ignored).
+ * @param $limit
+ *   If non-zero, limit the size of the result set.
+ *
+ * @return
+ *   An array of valid users in the form:
+ *   array(
+ *     uid => array(
+ *       'title' => The user name,
+ *       'rendered' => The text to display in widgets (can be HTML)
+ *     ),
+ *     ...
+ *   )
+ */
+function _realname_userreference_potential_references($field, $string = '', $match = 'contains', $ids = array(), $limit = NULL) {
+  static $results = array();
+
+  // Create unique id for static cache.
+  $cid = $field['field_name'] .':'. $match .':'. ($string !== '' ? $string : implode('-', $ids)) .':'. $limit;
+  if (!isset($results[$cid])) {
+    $references = FALSE;
+    if (module_exists('views') && !empty($field['advanced_view']) && $field['advanced_view'] != '--') {
+      $references = _realname_userreference_potential_references_views($field, $string, $match, $ids, $limit);
+    }
+    // If the view doesn't exist, we got FALSE, and fallback to the regular 'standard mode'.
+
+    if ($references === FALSE) {
+      $references = _realname_userreference_potential_references_standard($field, $string, $match, $ids, $limit);
+    }
+
+    // Store the results.
+    $results[$cid] = !empty($references) ? $references : array();
+  }
+
+  return $results[$cid];
+}
+
+/**
+ * Helper function for _realname_userreference_potential_references():
+ * case of Views-defined referenceable users.
+ */
+function _realname_userreference_potential_references_views($field, $string = '', $match = 'contains', $ids = array(), $limit = NULL) {
+  $view_name = $field['advanced_view'];
+
+  if ($view = views_get_view($view_name)) {
+    // We add a display, and let it derive from the 'default' display.
+    // TODO: We should let the user pick a display in the fields settings - sort of requires AHAH...
+    $display = $view->add_display('content_references');
+    $view->set_display($display);
+
+    // TODO from merlinofchaos on IRC : arguments using summary view can defeat the style setting.
+    // We might also need to check if there's an argument, and set *its* style_plugin as well.
+    $view->display_handler->set_option('style_plugin', 'content_php_array_autocomplete');
+    $view->display_handler->set_option('row_plugin', 'fields');
+    // Used in content_plugin_style_php_array::render(), to get
+    // the 'field' to be used as title.
+    $view->display_handler->set_option('content_title_field', 'name');
+
+    // Additional options to let content_plugin_display_references::query()
+    // narrow the results.
+    $options = array(
+      'table' => 'realname',
+      'field_string' => 'realname',
+      'string' => $string,
+      'match' => $match,
+      'field_id' => 'uid',
+      'ids' => $ids,
+    );
+    $view->display_handler->set_option('content_options', $options);
+
+    // TODO : for consistency, a fair amount of what's below
+    // should be moved to content_plugin_display_references
+
+    // Limit result set size.
+    if (isset($limit)) {
+      $view->display_handler->set_option('items_per_page', $limit);
+    }
+
+    // Get arguments for the view.
+    if (!empty($field['advanced_view_args'])) {
+      // TODO: Support Tokens using token.module ?
+      $view_args = array_map('trim', explode(',', $field['advanced_view_args']));
+    }
+    else {
+      $view_args = array();
+    }
+
+    // We do need name field, so add it if not present (unlikely, but...)
+    $fields = $view->get_items('field', $display);
+    if (!isset($fields['name'])) {
+      $view->add_item($display, 'field', 'users', 'name');
+    }
+
+    // If not set, make all fields inline and define a separator.
+    $options = $view->display_handler->get_option('row_options');
+    if (empty($options['inline'])) {
+      $options['inline'] = drupal_map_assoc(array_keys($view->get_items('field', $display)));
+    }
+    if (empty($options['separator'])) {
+      $options['separator'] = '-';
+    }
+    $view->display_handler->set_option('row_options', $options);
+
+    // Make sure the query is not cached
+    $view->is_cacheable = FALSE;
+
+    // Get the results.
+    $result = $view->execute_display($display, $view_args);
+  }
+  else {
+    $result = FALSE;
+  }
+
+  return $result;
+}
+
+/**
+ * Helper function for _realname_userreference_potential_references():
+ * referenceable users defined by user role and status
+ */
+function _realname_userreference_potential_references_standard($field, $string = '', $match = 'contains', $ids = array(), $limit = NULL) {
+  global $db_type;
+  $where = array();
+  $args = array();
+  $join = array();
+
+  $like = ($db_type == 'pgsql') ? 'ILIKE' : 'LIKE';
+  if ($string !== '') {
+    $match_operators = array(
+      'contains' => $like ."'%%%s%%'",
+      'equals' => "= '%s'",
+      'starts_with' => $like ."'%s%%'",
+    );
+    $where[] = 'n.realname '. (isset($match_operators[$match]) ? $match_operators[$match] : $match_operators['contains']);
+    $args[] = $string;
+  }
+  elseif ($ids) {
+    $where[] = 'n.uid IN ('. db_placeholders($ids) .')';
+    $args = array_merge($args, $ids);
+  }
+  else {
+    $where[] = "n.uid > 0";
+  }
+
+  $roles = array();
+  if (isset($field['referenceable_roles']) && is_array($field['referenceable_roles'])) {
+    // keep only selected checkboxes
+    $roles = array_filter($field['referenceable_roles']);
+    // filter invalid values that seems to get through sometimes ??
+    $roles = array_intersect(array_keys(user_roles(1)), $roles);
+  }
+  if (!empty($roles) && !in_array(DRUPAL_AUTHENTICATED_RID, $roles)) {
+    $where[] = "r.rid IN (". implode($roles, ',') .")";
+    $join[] = 'LEFT JOIN {users_roles} r ON n.uid = r.uid';
+  }
+
+  $status = array();
+  if (isset($field['referenceable_status']) && is_array($field['referenceable_status'])) {
+    // keep only selected checkboxes
+    $status = array_filter($field['referenceable_status']);
+  }
+  if (!empty($status)) {
+    // Limit query if only one status should be referenced.
+    if (count($status) == 1) {
+      $where[] = "u.status = ". array_pop($status);
+    }
+  }
+
+  $join[] = 'INNER JOIN {users} u ON n.uid = u.uid';
+
+  if (!empty($limit)) {
+    $limit_clause = ' LIMIT '. $limit;
+  }
+
+  $users = array();
+  $where_clause = $where ? 'WHERE ('. implode(') AND (', $where) .')' : '';
+  $result = db_query('SELECT n.realname, n.uid, u.name FROM {realname} n '. implode(' ', $join) .' '. $where_clause .' ORDER BY n.realname ASC'. $limit_clause, $args);
+  while ($user = db_fetch_object($result)) {
+    $account = realname_get_user($user->uid);
+    if ($account->name != $user->name) {
+      $users[$user->uid] = array(
+        'title' => $account->name .' ('. $user->name .')',
+        'rendered' => check_plain($account->name) .' ('. check_plain($user->name) .')',
+      );
+    }
+    else {
+      $users[$user->uid] = array(
+        'title' => $user->name,
+        'rendered' => check_plain($user->name),
+      );
+    }
+  }
+  return $users;
+}
+
+/**
+* Check access to the menu callback of the autocomplete widget.
+*
+* Check for both 'edit' and 'view' access in the unlikely event
+* a user has edit but not view access.
+*/
+function realname_userreference_auto_access($field_name) {
+  return user_access('access content') && ($field = content_fields($field_name)) && isset($field['field_name']) && content_access('view', $field) && content_access('edit', $field);
+}
+
+/**
+ * Menu callback; Retrieve a pipe delimited string of realname autocomplete suggestions for existing users
+ */
+function realname_userreference_auto($field_name, $string = '') {
+  $fields = content_fields();
+  $field = $fields[$field_name];
+  $match = isset($field['widget']['autocomplete_match']) ? $field['widget']['autocomplete_match'] : 'contains';
+  $matches = array();
+
+  $references = _realname_userreference_potential_references($field, $string, $match, array(), 10);
+  foreach ($references as $id => $row) {
+    // Add a class wrapper for a few required CSS overrides.
+    $matches[$row['title']] = '<div class="reference-autocomplete">'. $row['rendered'] .'</div>';
+  }
+  drupal_json($matches);
+}
+
+/**
+ * FAPI theme for an individual elements.
+ *
+ * The textfield or select is already rendered by the
+ * textfield or select themes and the html output
+ * lives in $element['#children']. Override this theme to
+ * make custom changes to the output.
+ *
+ * $element['#field_name'] contains the field name
+ * $element['#delta]  is the position of this element in the group
+ */
+function theme_realname_userreference_auto($element) {
+  return $element['#children'];
+}

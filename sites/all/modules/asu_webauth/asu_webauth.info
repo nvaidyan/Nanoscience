@@ -1,0 +1,5 @@
+name = ASU Webauth
+description = Allows administrators to define that user login should happen via ASU Webauth and configure appropriate settings
+version = 6.x-1.x
+core = 6.x
+package = ASU

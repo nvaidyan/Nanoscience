@@ -1,0 +1,18 @@
+/**
+*  Title: ASU Zen Theme
+*  Copyright: (c) 2010 Arizona State University
+*  Author: Jeff Beeman, Kathy Marks, Nathan Gudmunson
+*  Contributor: Maximo Mena
+*  Description: CSS rules to create a centered fixed width layout
+*/
+body {
+        background-color: #ddd;
+}
+.asu_set_fixed_width {
+        width: 1000px;
+        margin: 0 auto;
+        background-color: #fff;
+}
+#asu_container {
+        background-color: #fff;
+}

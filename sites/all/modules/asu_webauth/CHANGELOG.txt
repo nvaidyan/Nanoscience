@@ -1,0 +1,52 @@
+ASU Webauth Changelog
+
+
+6.x-1.0, 2009-07-09
+-------------------------
+Version 1.0 Release
+- Updated module so that any forced inclusions for webauth (e.g. admin, admin/*)
+  are now properly passed to the webauth via the callapp parameter.
+- fixed theme issue where the callapp parameter does not forward for any page (specified or not) 
+  in Drupal 6.
+
+
+6.x-1.0-dev, 2008-11-04
+-------------------------
+Porting to 6.x
+- Manually included the user.pages.inc file to compensate for Drupal 6 
+  streamlining the module loading and not loading this required inc file.
+
+
+5.x-1.0, 2007-08-06
+-------------------------
+Version 1.0 Release
+- Changed package definition to "ASU"
+
+
+5.x-1.0-beta4, 2007-06-04
+-------------------------
+General
+- Default role for webauth'd users is now "anonymous user"
+
+
+5.x-1.0-beta3, 2007-05-09
+-------------------------
+General
+- Local login is now possible even if the site admin has set all pages to
+  require webauth login.  Local login can be reached via user/?locallogin
+
+
+5.x-1.0-beta2, 2007-04-16
+-------------------------
+General
+- New setting added to force all requests to /user to be redirected to 
+  webauth.  Local login can still be accessed via /user?locallogin
+- User roles are now updated on every login, to ensure webauth role gets set.
+- Added optional setting to allow the user email field to be blank.
+- Fixed issues where errors were reported upon user creation.
+- Attempted to fix issue where module would think the user had an active 
+  webauth session when they actually don't.  This needs to be tested and 
+  verified.
+- All settings are now stored in individual Drupal system variables, instead
+  of being in one large array.
+- General code cleanup

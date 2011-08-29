@@ -1,0 +1,603 @@
+<?php
+/**
+ * @file
+ * Provide ASU Webauth integration for user auth
+ * 
+ * @author Jeff Beeman: jeff.beeman@asu.edu
+ * @updated Nathan Gudmunson: nathan.gudmunson@asu.edu
+ * @version 6.x-1.0
+ * @see README.txt for installation and setup instructions
+ */
+
+//include the user.pages.inc file so the user_logout() func 
+//available to the asu_webauth module
+module_load_include('inc', 'user', 'user.pages');
+
+
+/**
+ * Implementation of hook_help().
+ */
+function asu_webauth_help($path, $arg) {
+  // Empty for now - info is contained in asu_webauth.info
+}
+
+
+
+
+/**
+ * Implementation of hook_perm().
+ */
+function asu_webauth_perm() {
+  return array('administer asu webauth');
+}
+
+
+
+
+/**
+ * Implementation of hook_link().
+ *
+ * Unused: Modifies links to provide a link to webauth for login functions
+ */
+function asu_webauth_link($type, $node = NULL, $teaser = FALSE) {
+}
+
+
+
+
+/**
+ * Implementation of hook_menu().
+ */
+function asu_webauth_menu() {
+  	$items = array();
+
+	$items['admin/settings/asu_webauth'] = array(
+	  'title' => 'ASU Webauth',
+	  'description' => t('Settings for webauth behavior.'),
+	  'page callback' => 'drupal_get_form',
+	  'page arguments' => array('asu_webauth_admin_settings'),
+	  'access arguments' => array('administer site configuration'),
+	  'menu_name' => 'asu_webauth',
+	);
+
+	return $items;
+}
+
+
+/**
+ * Implementation of hook_init()
+ *
+ * Performs all the logic that determines whether or not a user needs to
+ * be webauth'd to view the current page.  Also handles automatically 
+ * logging the user in / out if they have an active / inactive webauth cookie.
+ */
+function asu_webauth_init() {
+  global $user;
+  $site_frontpage = variable_get('site_frontpage', 'node');
+  
+ 
+  
+  /**
+  * perform check to see if user must be logged in to view the content of the page
+  **/
+  
+  // is the user already logged in?
+  if($user->uid && $user->uid > 0) {
+  
+    if (variable_get('asu_webauth_verify_always', 0) && asu_webauth_user_is_webauth_user()) {
+      // if user has a webauth ticket, run verify to make sure it's still valid.  if it isn't, log the user out.
+      if ($_COOKIE["ASUWEBAUTH"]) {
+        if (!_asu_webauth_verify()) {
+          user_logout();
+        }
+      } else {
+        user_logout();
+        drupal_set_message(t("Your webauth session has ended and you have been logged out"));
+      }
+    }
+  }
+  
+  // does this page require login?
+  else if (_asu_webauth_force_login() || $_COOKIE["ASUWEBAUTH"]){
+    
+    $asurite = _asu_webauth_verify();
+    
+    // if user has a webauth cookie, but verify failed, log him out
+    if ($_COOKIE["ASUWEBAUTH"] && !$asurite && asu_webauth_user_is_webauth_user()) {
+      user_logout();
+    }
+    
+    if ($asurite) {
+      // try to load the user from Drupal
+      if ($account = user_load(array('name' => $asurite))) {
+        $user = $account;
+      }
+      $all_roles = user_roles();
+      $webauth_roles = array();
+      foreach ($all_roles as $key=>$value) {
+        if (array_key_exists($key, variable_get('asu_webauth_auto_assigned_role', array(DRUPAL_ANONYMOUS_RID)))) {
+          $webauth_roles[$key] = $key;
+        }
+      }
+      
+      // if we're allowed to register new users and need to register this one...
+      if (!$user->uid && variable_get('asu_webauth_auto_register', false) == 1) {
+        // Register the user
+        $user_default = array(
+          "name" => $asurite, 
+          "pass" => user_password(), 
+          "init" => $asurite, 
+          "status" => 1, 
+          "roles" => $webauth_roles
+        );
+        $user = user_save("", $user_default);
+        watchdog("user", t("new ASURITE user: %n", array('%n' => $user->name)), 
+          WATCHDOG_NOTICE, 
+          l(t("edit user"), 
+          "user/$user->uid/edit")
+        );
+      } 
+
+      // if the user is in drupal already
+      else if ($user->uid) {
+        // update the roles and reset the password
+        $roles = $user->roles;
+        foreach($webauth_roles as $role) {
+          $roles[$role] = $role;
+        }
+        $user_up = array(
+          "pass" => user_password(),
+          "roles" => $roles
+        );
+        $user = user_save($user, $user_up);
+      }
+      
+      // fire the user login hook
+      module_invoke_all('user', 'login', null, $user);
+      // invoke the webauthLogin hook in all modules (i.e. simple_ldap module)
+      module_invoke_all('webauthLogin');
+      
+    } 
+    
+    
+  } 
+  
+}
+
+
+
+
+/**
+ * Implementation of hook_form_alter
+ * 
+ * Overrides specific form settings based on user policy.
+ */
+function asu_webauth_form_alter(&$form, $form_state, $form_id) {
+  
+  switch ($form_id){
+    case 'user_edit':
+      //make the email field hidden and force the value to the default.
+      if (variable_get('asu_webauth_hide_email', '') && !user_access('administer users')) {
+        $form['account']['mail']['#type']='hidden';
+        $form['account']['mail']['#required'] = false;
+      }
+      
+      if (variable_get('asu_webauth_email_not_required', '')) {
+        $form['account']['mail']['#required'] = false;
+      }
+
+      //Remove the password fields from the form.
+      if (variable_get('asu_webauth_hide_password', '') && !user_access('administer users')) {
+        unset($form['account']['pass']);
+      }
+      
+      // unset the entire "account information" fieldset, if necessary
+      if (variable_get('asu_webauth_hide_email', '') && variable_get('asu_webauth_hide_password', '') && !user_access('administer users')) {
+        unset($form['account']);
+      }
+    break;
+
+    case 'user_login':
+      if (variable_get('asu_webauth_forceLogin_on_user_page', '') && !isset($_REQUEST['locallogin'])) {
+        _asu_webauth_redirectTo_login();
+      }
+      else if (variable_get('asu_webauth_obfuscate_localLogin', '')) {
+        $newForm['webauth'] = array(
+          '#type' => 'fieldset',
+          '#title' => t('Login to %sitename', array('%sitename' => variable_get('site_name', 'Drupal'))),
+          '#collapsible' => false,
+        );
+        $newForm['webauth']['help'] = array(
+          '#type' => 'item',
+          '#value' => t('You are not currently logged in.')
+        );
+        $newForm['webauth']['message'] = array(
+          '#type' => 'item',
+          '#value' => variable_get('asu_webauth_obfuscate_localLogin_text', '')
+        );
+      
+        // Put the local login into a more obscured rollout.  
+        $newForm['locallogin'] = array(
+          '#type' => 'fieldset', 
+          '#title' => t('Local Login'),
+          '#collapsible' => true,
+          '#collapsed' => true,
+        );
+        $newForm['locallogin']['help'] = array(
+          '#type' => 'item',
+          '#value' => t('This login form will only work for certain users.  Please use one of the links above for logging in with an ASURITE ID.'),
+        );
+        foreach ($form as $key=>$value) {
+          if (!strstr($key, '#')) {
+            $newForm['locallogin'][$key] = $value;
+            unset($form[$key]);
+          } else {
+            $newForm[$key] = $value;
+          }
+        }
+        $form = array();
+        $form = $newForm;
+      }
+    break;
+    
+    case 'user_pass':
+      if (!user_access('administer users') && variable_get('asu_webauth_changePasswordURL', '') != '') {
+        // redirect change password requests to the webauth registration page
+        header('Location: ' . variable_get('asu_webauth_changePasswordURL', ''));
+        exit;
+      }
+    break;
+    
+    case 'user_register':
+      if (!user_access('administer users') && variable_get('asu_webauth_registerURL', '') != '') {
+        // redirect registration requests to the webauth registration page
+        header('Location: ' . variable_get('asu_webauth_registerURL', ''));
+        exit;
+      } else if (user_access('administer users')) {
+        //Remove the password fields from the form.
+        if (variable_get('asu_webauth_hide_email', '')) {
+          unset($form['pass']);
+        }
+      }
+    break;
+  }
+}
+
+
+
+
+/**
+ * Provide system settings form for module
+ *
+ * @return A system settings form
+ */
+function asu_webauth_admin_settings() {  
+  // Server settings
+  $form['server'] = array(
+    '#type' => 'fieldset', 
+    '#title' => t('Webauth server settings'),
+    '#collapsible' => true,
+    '#collapsed' => false,
+  );
+  $form['server']['asu_webauth_verify_localPath'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('Path to Verify'), 
+    '#default_value' => variable_get('asu_webauth_verify_localPath', '/usr/local/bin/verify'), 
+    '#description' => t('Local (server) path to Verify utility. ex: /usr/local/bin/verify')
+  );
+  $form['server']['asu_webauth_verify_remoteURI'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('Verify URI'), 
+    '#default_value' => variable_get('asu_webauth_verify_remoteURI', 'webauth.asu.edu'), 
+    '#description' => t('The remote URI that verify should use for verifying webauth cookies.')
+  );
+  $form['server']['asu_webauth_verify_always'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Verify on every page view'),
+        '#default_value' => variable_get('asu_webauth_verify_always', false),
+        '#description' => t('Set whether or not to call verify on every page view by users with an active ASUWEBAUTH cookie.') . "<strong> " .t('Recommended') . "</strong>"
+  );
+  
+  
+  // Login / Logout Settings
+  $form['login'] = array(
+    '#type' => 'fieldset', 
+    '#title' => t('Login / Logout Settings'),
+    '#collapsible' => true,    
+    '#collapsed' => false
+  );
+  $form['login']['asu_webauth_loginURL'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('Login URL'), 
+    '#default_value' => variable_get('asu_webauth_loginURL', 'https://weblogin.asu.edu/cgi-bin/login'), 
+    '#description' => t('The full URL for Webauth logins.')
+  );
+  $form['login']['asu_webauth_callapp'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('callapp'), 
+    '#default_value' => variable_get('asu_webauth_callapp', ''), 
+    '#description' => t('The URL Webauth should redirect to after successful login.  If left blank, Drupal will use whatever page the user is currently on.')
+  );
+  $form['login']['asu_webauth_onLogoutURL'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('onLogoutURL'), 
+    '#default_value' => variable_get('asu_webauth_onLogoutURL', ''), 
+    '#description' => t('The URL Webauth should redirect to after successful logout.  If left blank, Drupal will use whatever page the user is currently on.')
+  );
+  $form['login']['asu_webauth_forceLogin_on_user_page'] = array(
+    '#type' => 'checkbox', 
+    '#title' => t('Force Login on User Login Page'), 
+    '#default_value' => variable_get('asu_webauth_forceLogin_on_user_page', ''), 
+    '#description' => t('Force users to be redirected to webauth login from user page (if they are not logged in).  Local login can still be reached from ') . l('user/?locallogin', 'user/?locallogin'),
+  );
+  
+  
+  // User account settings
+  $form['user'] = array(
+    '#type' => 'fieldset', 
+    '#title' => t('User account settings'),
+    '#collapsible' => true,
+    '#collapsed' => false
+  );
+  $form['user']['asu_webauth_auto_register'] = array(
+    '#type' => 'checkbox', 
+    '#title' => t('Automatically register new users'), 
+    '#default_value' => variable_get('asu_webauth_auto_register', false), 
+    '#description' => t('Automatically register any user that logs in via webauth.')
+  );
+  $form['user']['asu_webauth_hide_email'] = array(
+    '#type' => 'checkbox', 
+    '#title' => t('Users cannot change email address'), 
+    '#default_value' => variable_get('asu_webauth_hide_email', false), 
+    '#description' => t('Hide email address field on the edit user form')
+  );
+  $form['user']['asu_webauth_email_not_required'] = array(
+    '#type' => 'checkbox', 
+    '#title' => t('Do not require email address'), 
+    '#default_value' => variable_get('asu_webauth_email_not_required', false), 
+    '#description' => t('Do not require the user to provide an email address.')
+  );
+  $form['user']['asu_webauth_hide_password'] = array(
+    '#type' => 'checkbox', 
+    '#title' => t('Users cannot change password'), 
+    '#default_value' => variable_get('asu_webauth_hide_password', true), 
+    '#description' => t('Hides password field on the edit user form')
+  );
+  $form['user']['asu_webauth_obfuscate_localLogin'] = array(
+    '#type' => 'checkbox', 
+    '#title' => t('Obfuscate local login form'), 
+    '#default_value' => variable_get('asu_webauth_obfuscate_localLogin', true), 
+    '#description' => t('Places the local login form on the /user page into a less obvious rollout.  Use the settings for \'Login Form Message\' to set what text is displayed on that page.')
+  );
+  $form['user']['asu_webauth_obfuscate_localLogin_text'] = array(
+    '#type' => 'textarea', 
+    '#title' => t('Login form text'), 
+    '#default_value' => variable_get('asu_webauth_obfuscate_localLogin_text', ''), 
+    '#cols' => 40,  '#rows' => 5, 
+    '#description' => t('The message to be displayed above the obfuscated local login form located at /user.  <em>Only used if \'Obfuscate local login form\' option is checked.</em>')
+  );
+  $form['user']['asu_webauth_auto_assigned_role'] = array(
+    '#type' => 'select', 
+    '#title' => t('Auto-assign users to the role(s)'), 
+    '#default_value' => variable_get('asu_webauth_auto_assigned_role', array(DRUPAL_ANONYMOUS_RID)), 
+    '#options' => user_roles(),
+    '#multiple' => true,
+    '#description' => t('This value can be used to establish a role automatically for all webauth users.  If you are also using the simple_ldap module, you can use this role to establish a tie between webauth and LDAP-populated data.  i.e. Users with the role of \'webauth:user\' should have their LDAP data updated automatically.')
+  );
+  
+  
+  
+  // Redirect Settings
+  $form['redirect'] = array(
+    '#type' => 'fieldset', 
+    '#title' => t('Redirection settings'),
+    '#collapsible' => true,    
+    '#collapsed' => false
+  );
+  $form['redirect']['asu_webauth_redirect_on'] = array(
+    '#type' => 'radios', 
+    '#title' => t('Require ASU Webauth Login for '), 
+    '#default_value' => variable_get('asu_webauth_redirect_on', 'specific pages'), 
+    '#options' => array('specific pages'=>t('specific pages'), 'all pages'=>t('all pages'))
+  );
+  $form['redirect']['asu_webauth_redirect_pages'] = array(
+    '#type' => 'textarea',  
+    '#title' => t('Specific pages'),  
+    '#default_value' => variable_get('asu_webauth_redirect_pages', ''), 
+    '#cols' => 40,  '#rows' => 5, 
+    '#description' => t("Enter one page per line as Drupal paths. The '*' character is a wildcard. Example paths are '<em>blog</em>' for the blog page and '<em>blog/*</em>' for every personal blog. '<em>&lt;front&gt;</em>' is the front page.")
+  );
+  
+  
+  // Miscellaneous settings
+  $form['misc'] = array(
+    '#type' => 'fieldset', 
+    '#title' => t('Miscellaneous settings'),
+    '#collapsible' => true,    
+    '#collapsed' => false
+  );
+  $form['misc']['asu_webauth_changePasswordURL'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('Change password URL'), 
+    '#default_value' => variable_get('asu_webauth_changePasswordURL', ''), 
+    '#description' => t('The URL users should use for changing their password.  Leave blank to use the standard Drupal page.')
+  );
+  $form['misc']['asu_webauth_registerURL'] = array(
+    '#type' => 'textfield', 
+    '#title' => t('Registration URL'), 
+    '#default_value' => variable_get('asu_webauth_registerURL', ''), 
+    '#description' => t('The URL users should use for changing registering.  Leave blank to use the standard Drupal page.')
+  );
+  
+  return system_settings_form($form);
+}
+
+
+
+
+/**
+ * Determine whether webauth login should be enforced for this page load.
+ * This is done based on the redirection settings for this module.
+ * 
+ * @return Either redirects user to webauth login or returns FALSE
+ */
+function _asu_webauth_force_login() {
+  $force = false;
+  
+  if (variable_get('asu_webauth_redirect_on', '') == 'all pages') {
+    if ($_REQUEST['q'] == 'user' && isset($_REQUEST['locallogin'])) {
+      $force = false;
+    } else {
+      $force = true;
+    }
+  }
+  
+  else {
+    $page_match = FALSE;
+    $pages = variable_get('asu_webauth_redirect_pages', '');
+    // This common page matching logic used throughout drupal.
+    if ($pages) {
+      $path = drupal_get_path_alias($_GET['q']);
+      $regexp = '/^('. preg_replace(array('/(\r\n?|\n)/', '/\\\\\*/', '/(^|\|)\\\\<front\\\\>($|\|)/'), array('|', '.*', '\1'. variable_get('site_frontpage', 'node') .'\2'), preg_quote($pages, '/')) .')$/';
+      $page_match = preg_match($regexp, $path);
+    }
+    $force = $page_match;
+    
+  }
+  
+  if ($force) {
+    // if the webauth cookie isn't set, redirect the user to login
+    if (!$_COOKIE["ASUWEBAUTH"]) {
+      _asu_webauth_redirectTo_login($path);
+    }
+  }
+  
+  return $force;
+}
+
+
+
+
+/**
+ * Redirect to webauth login page
+ */
+function _asu_webauth_redirectTo_login($currentPage = '') {
+  
+  $callapp = variable_get('asu_webauth_callapp', '');
+  $loginURL = variable_get('asu_webauth_loginURL', '');
+  
+  //added to Drupal 6 version to make sure the callapp is passed correctly
+  if($_REQUEST['destination'] && $_REQUEST['destination'] != ''){
+  	$destination = "/" . $_REQUEST['destination'];
+  }elseif($currentPage != '') { 
+  	$destination = "/" . $currentPage; 
+  }
+  
+  
+  
+  $url = $callapp;
+  if ($url == '') {
+    $url = 'http://' . $_SERVER['HTTP_HOST'] . $destination;
+  } 
+  
+  $login_url = $loginURL . '?callapp=' . $url;
+  header("Location: " . $login_url);
+  exit;
+}
+
+
+
+
+/**
+ * Implementation of hook_user
+ *
+ * Intercepts logout hook for user, redirecting to webauth logout to assist with single sign out.
+ */
+function asu_webauth_user($op) {
+  if ($op == 'logout') {
+    global $base_url;
+  
+    $loginURL = variable_get('asu_webauth_loginURL', '');
+    $onLogoutURL = variable_get('asu_webauth_onLogoutURL', '');
+    if ($onLogoutURL == '') {
+      $onLogoutURL = $base_url;
+    }
+  
+    $logout_url = $loginURL . '?onLogoutURL=' . $onLogoutURL;
+
+    header('Location: '.$logout_url);
+    exit();
+  }
+
+}
+
+
+
+function asu_webauth_user_is_webauth_user($user = '') {
+  if ($user == '') {
+    global $user;
+  }
+  $webauth_roles = variable_get('asu_webauth_auto_assigned_role', array(DRUPAL_ANONYMOUS_RID));
+  foreach ($webauth_roles as $role) {
+    if ($role && array_key_exists($role, $user->roles)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+
+
+
+/**
+ * Check to see if webauth cookie is valid via verify
+ *
+ * @return
+ *   string User ID if verified
+ *   FALSE  If cookie doesn't verify
+ */
+function _asu_webauth_verify() {
+  
+  //The client's IP address
+  $clientIP = $_SERVER['REMOTE_ADDR'];
+  
+  //The authentication cookie from the client if it exists.
+  $authenticator = $_COOKIE["ASUWEBAUTH"];
+  
+  //Clean up the authentication cookie to prevent foul play
+  $authenticator = preg_replace("/[^_a-zA-Z0-9-+]/", "", $authenticator);
+  $authenticator = substr($authenticator, 0, 256);
+  
+  //The location of the ASUWebAuth verify program
+  $verify = variable_get('asu_webauth_verify_localPath', '');
+  
+  //The server for verify to use to verify the client
+  $vServer = variable_get('asu_webauth_verify_remoteURI', '');
+  
+  
+  if ($authenticator) {
+    //calls the ASUWebAuth verify program in a safe way and stores output in $verifyOutput
+    exec(escapeshellcmd("$verify $vServer $authenticator $clientIP"), $verifyOutput);
+  
+    //splits up the output of verify into the code and the asurite user id.
+    list($authCode, $asuriteID) = preg_split("/:/", $verifyOutput[0]);
+  
+    list($username, $junk) = preg_split("/\@/", $asuriteID);
+    //$username = $asuriteID;
+  
+    //if valid user code  
+    if ($authCode == "0") {
+      //$login_info['loggedin'] = 'true';
+      //$login_info['name'] = $username;
+      $login_info = $username;
+    }
+    else {
+      $login_info = false;
+      // destroy the webauth cookie
+      unset($_COOKIE["ASUWEBAUTH"]);
+    }
+  }
+  
+  return $login_info;
+}
+

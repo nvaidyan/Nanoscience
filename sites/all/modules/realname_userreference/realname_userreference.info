@@ -1,0 +1,14 @@
+name = Realname Userreference
+description = Adds an additional widget to the CCK Userreference field that searches for Realnames for autocompletion and displays them.
+dependencies[] = userreference
+dependencies[] = realname
+package = CCK
+core = 6.x
+php = 5.0
+
+; Information added by drupal.org packaging script on 2011-03-07
+version = "6.x-1.2"
+core = "6.x"
+project = "realname_userreference"
+datestamp = "1299515768"
+
